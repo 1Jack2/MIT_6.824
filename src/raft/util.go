@@ -30,8 +30,9 @@ const (
 )
 
 // Debugging
-// const DebugFlag = true
-const DebugFlag = false
+const DebugFlag = true
+
+//const DebugFlag = false
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
 	if DebugFlag {
@@ -50,12 +51,10 @@ func init() {
 	log.SetFlags(log.Flags() &^ (log.Ldate | log.Ltime))
 }
 
-const debug = 1
-
 func Debug(topic logTopic, format string, a ...interface{}) {
-	if debug >= 1 {
+	if debugVerbosity >= 1 {
 		time := time.Since(debugStart).Microseconds()
-		time /= 100
+		time /= 1000
 		prefix := fmt.Sprintf("%06d %v ", time, string(topic))
 		format = prefix + format
 		log.Printf(format, a...)
