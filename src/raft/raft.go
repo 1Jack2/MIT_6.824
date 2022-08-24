@@ -93,10 +93,12 @@ type Raft struct {
 	// state a Raft server must maintain.
 
 	// Persistent state on all servers:
-	currentTerm int
-	votedFor    int
-	votedPeers  []bool
-	log         []LogEntry
+	currentTerm   int
+	votedFor      int
+	votedPeers    []bool
+	log           []LogEntry
+	snapshotIndex int
+	snapshotTerm  int
 
 	// Volatile state on all servers:
 	commitIndex   int
@@ -135,14 +137,18 @@ func (rf *Raft) persist() {
 	e.Encode(rf.votedFor)
 	e.Encode(rf.votedPeers)
 	e.Encode(rf.log)
+	e.Encode(rf.snapshotIndex)
+	e.Encode(rf.snapshotTerm)
 	data := w.Bytes()
-	Debug(dPersist, "S%d persist, term=%d, votedFor=%d, len(log)=%d, len(data)=%d", rf.me, rf.currentTerm, rf.votedFor, len(rf.log), len(data))
+	Debug(dPersist, "S%d persist, term=%d, votedFor=%d, sIdx=%d, sTerm=%d, len(log)=%d, len(data)=%d",
+		rf.me, rf.currentTerm, rf.votedFor, rf.snapshotIndex, rf.snapshotTerm, len(rf.log), len(data))
 	rf.persister.SaveRaftState(data)
 }
 
 // restore previously persisted state.
 func (rf *Raft) readPersist(data []byte) {
-	Debug(dPersist, "S%d start reading persist, term=%d, votedFor=%d, log=%v", rf.me, rf.currentTerm, rf.votedFor, rf.log)
+	Debug(dPersist, "S%d start reading persist, term=%d, votedFor=%d, sIdx=%d, sTerm=%d, log=%v", rf.me,
+		rf.currentTerm, rf.votedFor, rf.snapshotIndex, rf.snapshotTerm, rf.log)
 	if data == nil || len(data) < 1 { // bootstrap without any state?
 		return
 	}
@@ -154,18 +160,24 @@ func (rf *Raft) readPersist(data []byte) {
 	var votedFor int
 	var votePeers []bool
 	var logs []LogEntry
+	var snapshotIndex, snapshotTerm int
 	if d.Decode(&currentTerm) != nil ||
 		d.Decode(&votedFor) != nil ||
 		d.Decode(&votePeers) != nil ||
-		d.Decode(&logs) != nil {
+		d.Decode(&logs) != nil ||
+		d.Decode(&snapshotIndex) != nil ||
+		d.Decode(&snapshotTerm) != nil {
 		log.Fatalf("S%d readPersist error\n", rf.me)
 	} else {
 		rf.currentTerm = currentTerm
 		rf.votedFor = votedFor
 		rf.votedPeers = votePeers
 		rf.log = logs
+		rf.snapshotIndex = snapshotIndex
+		rf.snapshotTerm = snapshotTerm
 	}
-	Debug(dPersist, "S%d end reading persist, term=%d, votedFor=%d, log=%v", rf.me, rf.currentTerm, rf.votedFor, rf.log)
+	Debug(dPersist, "S%d end reading persist, term=%d, votedFor=%d, sIdx=%d, sTerm=%d, log=%v", rf.me,
+		rf.currentTerm, rf.votedFor, rf.snapshotIndex, rf.snapshotTerm, rf.log)
 }
 
 // A service wants to switch to snapshot.  Only do so if Raft hasn't
@@ -429,10 +441,13 @@ func (rf *Raft) broadcastLog(currentTerm int) {
 			// if term doesn't change, state must be leader
 			rf.assertIsLeader()
 
-			prevLogIndex := rf.nextIndex[server] - 1
-			prevLogTerm := initialTerm
-			if prevLogIndex >= 0 {
+			var prevLogIndex, prevLogTerm int
+			if rf.nextIndex[server]-1 >= 0 {
+				prevLogIndex = rf.nextIndex[server] - 1
 				prevLogTerm = rf.log[prevLogIndex].Term
+			} else {
+				prevLogIndex = rf.snapshotIndex
+				prevLogTerm = rf.snapshotTerm
 			}
 			args := AppendEntriesArgs{
 				Term:         rf.currentTerm,
@@ -607,7 +622,7 @@ func (rf *Raft) getLastLogTerm() int {
 	if len(rf.log) > 0 {
 		return rf.log[len(rf.log)-1].Term
 	} else {
-		return initialTerm
+		return rf.snapshotTerm
 	}
 }
 
@@ -643,6 +658,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.becomeFollowerWithoutPersist(initialTerm, nobody)
 	rf.commitIndex = -1
 	rf.lastApplied = -1
+	rf.snapshotIndex = -1
+	rf.snapshotTerm = 0
 	rf.matchIndex = make([]int, len(peers))
 	for i := range rf.matchIndex {
 		rf.matchIndex[i] = -1
