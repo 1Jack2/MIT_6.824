@@ -585,6 +585,7 @@ func (rf *Raft) ticker() {
 							Debug(dLeader, "S%d Achieved Majority for T%d (%d), converting to Leader", rf.me, rf.currentTerm, rf.voteCount())
 							rf.state = LEADER
 							rf.lastHeartbeat = time.Now()
+							rf.initNextIndexAndMatchIndex()
 							rf.mu.Unlock()
 							rf.broadcastLog(args.Term)
 							return
@@ -660,23 +661,31 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.lastApplied = -1
 	rf.snapshotIndex = -1
 	rf.snapshotTerm = 0
-	rf.matchIndex = make([]int, len(peers))
-	for i := range rf.matchIndex {
-		rf.matchIndex[i] = -1
-	}
-	rf.nextIndex = make([]int, len(peers))
-	for i := range rf.nextIndex {
-		rf.nextIndex[i] = 0
-	}
+	rf.log = make([]LogEntry, 0)
 	rf.applyCh = applyCh
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
+	rf.initNextIndexAndMatchIndex()
 
 	// start ticker goroutine to start elections
 	go rf.ticker()
 
 	return rf
+}
+
+// reinitialized after election
+// fixme: optimize nextIndex rollback for lab-2c
+func (rf *Raft) initNextIndexAndMatchIndex() {
+	rf.nextIndex = make([]int, len(rf.peers))
+	rf.matchIndex = make([]int, len(rf.peers))
+	for i := range rf.nextIndex {
+		if i == rf.me {
+			continue
+		}
+		rf.nextIndex[i] = len(rf.log)
+		rf.matchIndex[i] = -1
+	}
 }
 
 func (rf *Raft) majorityNumber() int {
