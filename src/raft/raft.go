@@ -276,8 +276,11 @@ type AppendEntriesArgs struct {
 }
 
 type AppendEntriesReply struct {
-	Term    int
-	Success bool
+	Term                     int
+	Success                  bool
+	FirstConflictingLogIndex int
+	FirstConflictingLogTerm  int
+	LogLen                   int
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
@@ -292,6 +295,13 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	rf.lastHeartbeat = time.Now()
 	rf.becomeFollower(args.Term, args.LeaderId)
 
+	// log is too short
+	if args.PrevLogIndex >= len(rf.log) {
+		reply.Term = rf.currentTerm
+		reply.Success = false
+		reply.LogLen = len(rf.log)
+		return
+	}
 	// prevLogTerm matches
 	if args.PrevLogIndex < 0 || (args.PrevLogIndex < len(rf.log) && rf.log[args.PrevLogIndex].Term == args.PrevLogTerm) {
 		Debug(dLog, "S%d[T%d] <- S%d[T%d] Accept PLI: %d PLT: %d N: %d LC: %d - %v", rf.me, rf.currentTerm,
@@ -324,8 +334,19 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		}
 		return
 	}
+	// conflicting
 	Debug(dDrop, "S%d <- S%d Deny PLI: %d PLT: %d N: %d LC: %d - %v", rf.me, args.LeaderId, args.PrevLogIndex,
 		args.PrevLogTerm, len(args.Entries), args.LeaderCommit, args.Entries)
+	firstConflictingLogTerm := rf.log[args.PrevLogIndex].Term
+	var i int
+	for i = args.PrevLogIndex; i >= 0; i-- {
+		if rf.log[i].Term != firstConflictingLogTerm {
+			break
+		}
+	}
+	reply.FirstConflictingLogIndex = i + 1
+	reply.FirstConflictingLogTerm = firstConflictingLogTerm
+	reply.LogLen = -1
 	reply.Term = rf.currentTerm
 	reply.Success = false
 }
@@ -493,7 +514,25 @@ func (rf *Raft) broadcastLog(currentTerm int) {
 					}
 				}
 			} else { // log inconsistency, retry
-				rf.nextIndex[server] = max(0, rf.nextIndex[server]-1)
+				nextIndex := max(0, rf.nextIndex[server]-1)
+				// follower's log is too short
+				if reply.LogLen >= 0 {
+					nextIndex = min(nextIndex, reply.LogLen)
+				} else {
+					// leader has XTerm
+					var j int
+					for j = min(len(rf.log)-1, rf.nextIndex[server]); j >= 0; j-- {
+						if rf.log[j].Term == reply.FirstConflictingLogTerm {
+							nextIndex = min(nextIndex, j)
+							break
+						}
+					}
+					// leader doesn't have XTerm
+					if j < 0 {
+						nextIndex = min(nextIndex, reply.FirstConflictingLogIndex)
+					}
+				}
+				rf.nextIndex[server] = nextIndex
 			}
 
 			rf.mu.Unlock()
@@ -675,7 +714,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 }
 
 // reinitialized after election
-// fixme: optimize nextIndex rollback for lab-2c
 func (rf *Raft) initNextIndexAndMatchIndex() {
 	rf.nextIndex = make([]int, len(rf.peers))
 	rf.matchIndex = make([]int, len(rf.peers))
