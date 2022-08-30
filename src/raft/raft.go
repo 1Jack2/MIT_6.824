@@ -483,17 +483,13 @@ func (rf *Raft) broadcastLog(currentTerm int) {
 			rf.mu.Unlock()
 			rf.sendAppendEntries(server, &args, &reply)
 			rf.mu.Lock()
-
-			if rf.currentTerm < reply.Term {
-				rf.becomeFollower(reply.Term, nobody)
+			if !rf.checkAfterAppendEntriesOrInstallSnapshot(term, reply.Term) {
+				return
+			}
+			if rf.nextIndex[server] != relLogIndex(rf.snapshotIndex, args.PrevLogIndex+1) {
 				rf.mu.Unlock()
 				return
 			}
-			if rf.currentTerm != term {
-				rf.mu.Unlock()
-				return
-			}
-			rf.assertIsLeader()
 
 			if reply.Success {
 				rf.nextIndex[server] = args.PrevLogIndex + 1 + len(args.Entries)
@@ -538,6 +534,20 @@ func (rf *Raft) broadcastLog(currentTerm int) {
 			rf.mu.Unlock()
 		}(i, currentTerm)
 	}
+}
+
+func (rf *Raft) checkAfterAppendEntriesOrInstallSnapshot(beforeSendTerm, replyTerm int) bool {
+	if rf.currentTerm < replyTerm {
+		rf.becomeFollower(replyTerm, nobody)
+		rf.mu.Unlock()
+		return false
+	}
+	if rf.currentTerm != beforeSendTerm {
+		rf.mu.Unlock()
+		return false
+	}
+	rf.assertIsLeader()
+	return true
 }
 
 func (rf *Raft) assertIsLeader() {
