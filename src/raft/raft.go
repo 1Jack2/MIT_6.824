@@ -745,6 +745,35 @@ func (rf *Raft) voteCount() int {
 	return cnt
 }
 
+func (rf *Raft) lastAbsLogIndex() int {
+	return rf.snapshotIndex + len(rf.log)
+}
+
+func (rf *Raft) lastAbsLogTerm() int {
+	if len(rf.log) == 0 {
+		return rf.snapshotTerm
+	}
+	return rf.log[len(rf.log)-1].Term
+}
+
+func absLogIndex(snapshotLogIndex, relLogIndex int) int {
+	return snapshotLogIndex + 1 + relLogIndex
+}
+
+func relLogIndex(snapshotLogIndex, absLogIndex int) int {
+	return absLogIndex - snapshotLogIndex - 1
+}
+
+// service layer <-- raft layer
+func logOut(raftAbsLogIndex int) int {
+	return raftAbsLogIndex + 1
+}
+
+// service layer --> raft layer
+func logIn(serviceLayerLogIndex int) int {
+	return serviceLayerLogIndex - 1
+}
+
 func min(a, b int) int {
 	if a < b {
 		return a
@@ -757,4 +786,16 @@ func max(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func cloneLog(orig []LogEntry) []LogEntry {
+	x := make([]LogEntry, len(orig))
+	copy(x, orig)
+	return x
+}
+
+func cloneByte(orig []byte) []byte {
+	x := make([]byte, len(orig))
+	copy(x, orig)
+	return x
 }
