@@ -19,7 +19,10 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 	return
 }
 
-const CommitTimeOut = 500 * time.Millisecond
+const (
+	CommitTimeOut  = 500 * time.Millisecond
+	TickerInterval = 5 * time.Millisecond
+)
 
 type Op struct {
 	// Your definitions here.
@@ -72,7 +75,7 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 		}
 
 		kv.mu.Unlock()
-		time.Sleep(30 * time.Millisecond)
+		time.Sleep(TickerInterval)
 	}
 	reply.Err = ErrWrongLeader
 }
@@ -106,7 +109,7 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		}
 
 		kv.mu.Unlock()
-		time.Sleep(30 * time.Millisecond)
+		time.Sleep(TickerInterval)
 	}
 	reply.Err = ErrWrongLeader
 }

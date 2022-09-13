@@ -663,7 +663,6 @@ func (rf *Raft) broadcastLog(currentTerm int) {
 					}
 				}
 			} else { // log inconsistency, retry
-				// todo
 				// reply log len < arg log len
 				nextIndex := rf.nextIndex[server] - 1
 				// follower's log is too short
@@ -803,10 +802,11 @@ func (rf *Raft) ticker() {
 		} else {
 			rf.mu.Unlock()
 		}
-		time.Sleep(30 * time.Millisecond)
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 
+// NOT threadsafe
 func (rf *Raft) applyLogAndSnapshot() {
 	if rf.snapshotIndex > rf.lastAppliedSnapshot {
 		Debug(dClient, "S%d apply snapshot SI: %d, ST: %d, size: %d", rf.me, rf.snapshotIndex, rf.snapshotTerm, len(rf.snapshot))
@@ -833,6 +833,7 @@ func (rf *Raft) applyLogAndSnapshot() {
 		rf.lastApplied += 1
 		// must release lock, because receiver maybe call rf.Snapshot, which cause deadlock
 		rf.mu.Unlock()
+		// NOT threadsafe
 		rf.applyCh <- applyMsg
 		rf.mu.Lock()
 	}
