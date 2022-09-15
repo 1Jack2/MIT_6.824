@@ -46,7 +46,8 @@ type KVServer struct {
 
 	// Your definitions here.
 	state       map[string]string           // kv table
-	ClerkResult map[string]map[int64]string // Clerk RPC result
+	clerkResult map[string]map[int64]string // Clerk RPC result
+	term        int
 }
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
@@ -57,7 +58,7 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 		ClerkId:  args.ClerkId,
 		ClerkSeq: args.ClerkSeq,
 	}
-	_, _, isLeader := kv.rf.Start(op)
+	_, term, isLeader := kv.rf.Start(op)
 	if !isLeader {
 		reply.Err = ErrWrongLeader
 		return
@@ -66,6 +67,11 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	before := time.Now()
 	for time.Now().Sub(before) < CommitTimeOut {
 		kv.mu.Lock()
+		if kv.termChanged(term) {
+			kv.mu.Unlock()
+			reply.Err = ErrWrongLeader
+			return
+		}
 		value, ok := kv.getClerkReq(op.ClerkId, op.ClerkSeq)
 		if ok {
 			reply.Err = OK
@@ -92,7 +98,7 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		ClerkId:  args.ClerkId,
 		ClerkSeq: args.ClerkSeq,
 	}
-	_, _, isLeader := kv.rf.Start(op)
+	_, term, isLeader := kv.rf.Start(op)
 	if !isLeader {
 		reply.Err = ErrWrongLeader
 		return
@@ -101,6 +107,11 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	before := time.Now()
 	for time.Now().Sub(before) < CommitTimeOut {
 		kv.mu.Lock()
+		if kv.termChanged(term) {
+			kv.mu.Unlock()
+			reply.Err = ErrWrongLeader
+			return
+		}
 		_, ok := kv.getClerkReq(op.ClerkId, op.ClerkSeq)
 		if ok {
 			reply.Err = OK
@@ -156,7 +167,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 
 	// You may need initialization code here.
 	kv.state = make(map[string]string)
-	kv.ClerkResult = make(map[string]map[int64]string)
+	kv.clerkResult = make(map[string]map[int64]string)
 
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
@@ -174,6 +185,12 @@ func (kv *KVServer) ticker() {
 		} else {
 			kv.mu.Lock()
 			op := applyMsg.Command.(Op)
+			_, ok := kv.getClerkReq(op.ClerkId, op.ClerkSeq)
+			if ok {
+				DPrintf("KV%d ignore duplicate op: %v value: %v", kv.me, op, kv.get(op.Key))
+				kv.mu.Unlock()
+				continue
+			}
 			DPrintf("KV%d before apply op: %v value: %v", kv.me, op, kv.get(op.Key))
 			switch op.OpType {
 			case PUT:
@@ -201,21 +218,25 @@ func (kv *KVServer) append(key, value string) {
 	kv.put(key, kv.get(key)+value)
 }
 
-func (kv *KVServer) getClerkReq(clerkId string, seq int64) (string, bool) {
-	m, value := kv.ClerkResult[clerkId]
-	if !value {
-		return "", value
+func (kv *KVServer) getClerkReq(clerkId string, seq int64) (value string, ok bool) {
+	m, ok := kv.clerkResult[clerkId]
+	if !ok {
+		return "", ok
 	}
-	op, value := m[seq]
-	return op, value
+	op, ok := m[seq]
+	return op, ok
 }
 
 // todo: clean ClerkReq
 func (kv *KVServer) putClerkReq(clerkId string, seq int64, value string) {
-	m, ok := kv.ClerkResult[clerkId]
+	m, ok := kv.clerkResult[clerkId]
 	if !ok {
-		kv.ClerkResult[clerkId] = make(map[int64]string)
-		m = kv.ClerkResult[clerkId]
+		kv.clerkResult[clerkId] = make(map[int64]string)
+		m = kv.clerkResult[clerkId]
 	}
 	m[seq] = value
+}
+
+func (kv *KVServer) termChanged(term int) bool {
+	return term == kv.term
 }

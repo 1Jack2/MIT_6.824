@@ -10,10 +10,10 @@ import (
 )
 
 type Clerk struct {
-	servers []*labrpc.ClientEnd
-	// You will have to modify this struct.
-	id  string
-	seq atomic.Int64
+	servers    []*labrpc.ClientEnd
+	id         string
+	seq        atomic.Int64
+	PrevLeader int
 }
 
 func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
@@ -35,25 +35,34 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 // must match the declared types of the RPC handler function's
 // arguments. and reply must be passed as a pointer.
 func (ck *Clerk) Get(key string) string {
-	seq := ck.nextSeq()
 	// You will have to modify this function.
-	for i := range ck.servers {
-		args := GetArgs{
-			Key:      key,
-			ClerkId:  ck.id,
-			ClerkSeq: seq,
+	server := ck.getPrevLeader()
+	seq := ck.nextSeq()
+	for {
+		for range ck.servers {
+			args := GetArgs{
+				Key:      key,
+				ClerkId:  ck.id,
+				ClerkSeq: seq,
+			}
+			reply := GetReply{}
+			DPrintf("Clerk-%v -> kvs%d Get ", ck.id, server)
+			ck.servers[server].Call("KVServer.Get", &args, &reply)
+			switch reply.Err {
+			case OK:
+				ck.updatePrevLeader(server)
+				return reply.Value
+			case ErrNoKey:
+				return ""
+			case ErrWrongLeader:
+				DPrintf("Clerk-%v Get WrongLeader: %d", ck.id, server)
+			default:
+				DPrintf("UNKOWN ERR CODE Clerk-%v Get args:%v reply: %v", ck.id, args, reply)
+			}
+
+			server = (server + 1) % len(ck.servers)
 		}
-		reply := GetReply{}
-		ck.servers[i].Call("KVServer.Get", &args, &reply)
-		switch reply.Err {
-		case OK:
-			return reply.Value
-		case ErrNoKey:
-			return ""
-		case ErrWrongLeader:
-		default:
-			log.Fatalf("Clerk-%v Get args:%v reply: %v", ck.id, args, reply)
-		}
+		time.Sleep(100 * time.Millisecond)
 	}
 	return ""
 }
@@ -72,9 +81,10 @@ func (ck *Clerk) nextSeq() int64 {
 // arguments. and reply must be passed as a pointer.
 func (ck *Clerk) PutAppend(key string, value string, op string) {
 	// You will have to modify this function.
+	server := ck.getPrevLeader()
 	seq := ck.nextSeq()
 	for {
-		for i := range ck.servers {
+		for range ck.servers {
 			args := PutAppendArgs{
 				Key:      key,
 				Value:    value,
@@ -83,16 +93,21 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 				ClerkSeq: seq,
 			}
 			reply := PutAppendReply{}
-			ck.servers[i].Call("KVServer.PutAppend", &args, &reply)
+			DPrintf("Clerk-%v -> kvs%d PutAppend ", ck.id, server)
+			ck.servers[server].Call("KVServer.PutAppend", &args, &reply)
 			switch reply.Err {
 			case OK:
+				ck.updatePrevLeader(server)
 				return
 			case ErrWrongLeader:
+				DPrintf("Clerk-%v PutAppend WrongLeader: %d", ck.id, server)
 			case ErrNoKey:
 				log.Fatalf("Clerk-%v PutAppend args:%v reply: %v", ck.id, args, reply)
 			default:
-				log.Fatalf("Clerk-%v PutAppend args:%v reply: %v", ck.id, args, reply)
+				DPrintf("UNKOWN ERR CODE Clerk-%v PutAppend args:%v reply: %v", ck.id, args, reply)
 			}
+
+			server = (server + 1) % len(ck.servers)
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
@@ -110,4 +125,16 @@ func randomString(length int) string {
 	b := make([]byte, length)
 	rand.Read(b)
 	return fmt.Sprintf("%x", b)[:length]
+}
+
+func (ck *Clerk) getPrevLeader() int {
+	DPrintf("Clerk-%v get PrevLeader: %d", ck.id, ck.PrevLeader)
+	return ck.PrevLeader
+}
+
+func (ck *Clerk) updatePrevLeader(leaderId int) {
+	if ck.PrevLeader != leaderId {
+		ck.PrevLeader = leaderId
+		DPrintf("Clerk-%v update PrevLeader: %d", ck.id, ck.PrevLeader)
+	}
 }
