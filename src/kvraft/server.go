@@ -45,9 +45,9 @@ type KVServer struct {
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
-	state       map[string]string           // kv table
-	clerkResult map[string]map[int64]string // Clerk RPC result
-	term        int
+	state             map[string]string           // kv table
+	clerkResult       map[string]map[int64]string // Clerk RPC result
+	lastCommitLogTerm int
 }
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
@@ -67,7 +67,7 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	before := time.Now()
 	for time.Now().Sub(before) < CommitTimeOut {
 		kv.mu.Lock()
-		if kv.termChanged(term) {
+		if kv.leaderChanged(term) {
 			kv.mu.Unlock()
 			reply.Err = ErrWrongLeader
 			return
@@ -107,7 +107,7 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	before := time.Now()
 	for time.Now().Sub(before) < CommitTimeOut {
 		kv.mu.Lock()
-		if kv.termChanged(term) {
+		if kv.leaderChanged(term) {
 			kv.mu.Unlock()
 			reply.Err = ErrWrongLeader
 			return
@@ -183,8 +183,8 @@ func (kv *KVServer) ticker() {
 		if applyMsg.CommandValid == false {
 			// ignore other types of ApplyMsg
 		} else {
-			kv.mu.Lock()
 			op := applyMsg.Command.(Op)
+			kv.mu.Lock()
 			_, ok := kv.getClerkReq(op.ClerkId, op.ClerkSeq)
 			if ok {
 				DPrintf("KV%d ignore duplicate op: %v value: %v", kv.me, op, kv.get(op.Key))
@@ -198,6 +198,7 @@ func (kv *KVServer) ticker() {
 			case APPEND:
 				kv.append(op.Key, op.Value)
 			}
+			kv.lastCommitLogTerm = applyMsg.CommandTerm
 			kv.putClerkReq(op.ClerkId, op.ClerkSeq, kv.get(op.Key))
 			DPrintf("KV%d after apply op: %v value: %v", kv.me, op, kv.get(op.Key))
 			kv.mu.Unlock()
@@ -237,6 +238,6 @@ func (kv *KVServer) putClerkReq(clerkId string, seq int64, value string) {
 	m[seq] = value
 }
 
-func (kv *KVServer) termChanged(term int) bool {
-	return term == kv.term
+func (kv *KVServer) leaderChanged(term int) bool {
+	return kv.lastCommitLogTerm > term
 }

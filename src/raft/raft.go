@@ -66,6 +66,7 @@ func getElectionTimeout() time.Duration {
 type ApplyMsg struct {
 	CommandValid bool
 	Command      interface{}
+	CommandTerm  int
 	CommandIndex int
 
 	// For 2D:
@@ -827,6 +828,7 @@ func (rf *Raft) applyLogAndSnapshot() {
 		applyMsg := ApplyMsg{
 			CommandValid: true,
 			Command:      rf.log[rf.lastApplied+1].Command,
+			CommandTerm:  rf.log[rf.lastApplied+1].Term,
 			CommandIndex: logOut(absLogIndex(rf.snapshotIndex, rf.lastApplied+1)),
 		}
 		Debug(dClient, "S%d applied log[%d]: %v applyMsg: %v", rf.me, rf.lastApplied+1, rf.log[rf.lastApplied+1], applyMsg)
