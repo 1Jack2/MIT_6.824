@@ -596,7 +596,10 @@ func (rf *Raft) broadcastLog(currentTerm int) {
 				var reply InstallSnapshotReply
 
 				rf.mu.Unlock()
-				rf.sendInstallSnapshot(server, &args, &reply)
+				ok := rf.sendInstallSnapshot(server, &args, &reply)
+				if !ok {
+					return
+				}
 				rf.mu.Lock()
 				if !rf.checkAfterAppendEntriesOrInstallSnapshot(term, reply.Term) {
 					return
@@ -633,7 +636,10 @@ func (rf *Raft) broadcastLog(currentTerm int) {
 			var reply AppendEntriesReply
 
 			rf.mu.Unlock()
-			rf.sendAppendEntries(server, &args, &reply)
+			ok := rf.sendAppendEntries(server, &args, &reply)
+			if !ok {
+				return
+			}
 			rf.mu.Lock()
 			if !rf.checkAfterAppendEntriesOrInstallSnapshot(term, reply.Term) {
 				return
@@ -764,7 +770,10 @@ func (rf *Raft) ticker() {
 					continue
 				}
 				go func(server int, args RequestVoteArgs, reply RequestVoteReply) {
-					rf.sendRequestVote(server, &args, &reply)
+					ok := rf.sendRequestVote(server, &args, &reply)
+					if !ok {
+						return
+					}
 					rf.mu.Lock()
 
 					if rf.currentTerm < reply.Term {
