@@ -361,31 +361,28 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 		// find first conflicted entry
 		conflicted := false
-		logChanged := false
-		i := relLogIndex(rf.snapshotIndex, args.PrevLogIndex+1)
+		logAppended := false
+		i := relLogIndex(rf.snapshotIndex, args.PrevLogIndex)
 		for _, entry := range args.Entries {
+			i += 1
 			// snapshot is not conflicted
 			if i < 0 {
 				continue
-			}
-			// append new entry
-			if i >= len(rf.log) {
+			} else if i >= len(rf.log) {
+				// append new entry
 				rf.log = append(rf.log, entry)
-				logChanged = true
-			}
-			// replace conflicted entry
-			if entry.Term != rf.log[i].Term {
+				logAppended = true
+			} else if entry.Term != rf.log[i].Term {
+				// replace conflicted entry
 				rf.log[i] = entry
 				conflicted = true
 			}
-			i += 1
 		}
-		logChanged = logChanged || conflicted
 		// if conflicted, delete all entry following it
 		if conflicted {
-			rf.log = rf.log[:i]
+			rf.log = rf.log[:i+1]
 		}
-		if logChanged {
+		if logAppended || conflicted {
 			rf.persist()
 		}
 
