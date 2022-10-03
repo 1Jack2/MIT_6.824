@@ -815,7 +815,9 @@ func (rf *Raft) ticker() {
 
 // NOT threadsafe
 func (rf *Raft) applyLogAndSnapshot() {
-	if rf.snapshotIndex > rf.lastAppliedSnapshot {
+	// don't send stale snapshot, because tests don't check this, see config.go:ingestSnap()
+	// must send when snapshotIndex=lastApplied, because we keep rf.lastApplied >= -1 for simplicity
+	if rf.snapshotIndex > rf.lastAppliedSnapshot && rf.snapshotIndex >= absLogIndex(rf.snapshotIndex, rf.lastApplied) {
 		Debug(dClient, "S%d apply snapshot SI: %d, ST: %d, size: %d", rf.me, rf.snapshotIndex, rf.snapshotTerm, len(rf.snapshot))
 		applyMsg := ApplyMsg{
 			SnapshotValid: true,
@@ -828,7 +830,8 @@ func (rf *Raft) applyLogAndSnapshot() {
 		rf.applyCh <- applyMsg
 		rf.mu.Lock()
 	}
-	for rf.commitIndex > rf.lastApplied {
+	for !(rf.snapshotIndex > rf.lastAppliedSnapshot && rf.snapshotIndex >= absLogIndex(rf.snapshotIndex, rf.lastApplied)) &&
+		rf.commitIndex > rf.lastApplied {
 		Debug(dClient, "S%d applying rf.lastApplied: %d rf.commitIndex: %d logLen: %d, rf.sIdx: %d",
 			rf.me, rf.lastApplied, rf.commitIndex, len(rf.log), rf.snapshotIndex)
 		applyMsg := ApplyMsg{
@@ -839,9 +842,9 @@ func (rf *Raft) applyLogAndSnapshot() {
 		}
 		Debug(dClient, "S%d applied log[%d]: %v applyMsg: %v", rf.me, rf.lastApplied+1, rf.log[rf.lastApplied+1], applyMsg)
 		rf.lastApplied += 1
-		// must release lock, because receiver maybe call rf.Snapshot, which cause deadlock
+		// must release lock, because receiver may call rf.Snapshot, which cause deadlock
 		rf.mu.Unlock()
-		// NOT threadsafe
+		// NOT threadsafe: recheck if need sending snapshot
 		rf.applyCh <- applyMsg
 		rf.mu.Lock()
 	}
