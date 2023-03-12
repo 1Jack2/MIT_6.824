@@ -46,7 +46,7 @@ func (ck *Clerk) Get(key string) string {
 				ClerkSeq: seq,
 			}
 			reply := GetReply{}
-			DPrintf("Clerk-%v -> kvs%d Get ", ck.id, server)
+			DPrintf("Clerk-%v -> kvs%d Get: %v", ck.id, server, args)
 			ck.servers[server].Call("KVServer.Get", &args, &reply)
 			switch reply.Err {
 			case OK:
@@ -64,7 +64,6 @@ func (ck *Clerk) Get(key string) string {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	return ""
 }
 
 func (ck *Clerk) nextSeq() int64 {
@@ -93,7 +92,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 				ClerkSeq: seq,
 			}
 			reply := PutAppendReply{}
-			DPrintf("Clerk-%v -> kvs%d PutAppend ", ck.id, server)
+			DPrintf("Clerk-%v -> kvs%d PutAppend: %v", ck.id, server, args)
 			ck.servers[server].Call("KVServer.PutAppend", &args, &reply)
 			switch reply.Err {
 			case OK:

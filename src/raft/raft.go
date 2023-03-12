@@ -134,6 +134,8 @@ func (rf *Raft) GetState() (int, bool) {
 func (rf *Raft) persist() {
 	// Your code here (2C).
 	// Example:
+	Debug(dPersist, "S%d persist START, term=%d, votedFor=%d, sIdx=%d, sTerm=%d, len(log)=%d",
+		rf.me, rf.currentTerm, rf.votedFor, rf.snapshotIndex, rf.snapshotTerm, len(rf.log))
 	w := new(bytes.Buffer)
 	e := labgob.NewEncoder(w)
 	e.Encode(rf.currentTerm)
@@ -143,7 +145,7 @@ func (rf *Raft) persist() {
 	e.Encode(rf.snapshotIndex)
 	e.Encode(rf.snapshotTerm)
 	data := w.Bytes()
-	Debug(dPersist, "S%d persist, term=%d, votedFor=%d, sIdx=%d, sTerm=%d, len(log)=%d, len(data)=%d",
+	Debug(dPersist, "S%d persist END, term=%d, votedFor=%d, sIdx=%d, sTerm=%d, len(log)=%d, len(data)=%d",
 		rf.me, rf.currentTerm, rf.votedFor, rf.snapshotIndex, rf.snapshotTerm, len(rf.log), len(data))
 	rf.persister.SaveStateAndSnapshot(data, rf.snapshot)
 }
@@ -214,7 +216,7 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 
 	relIndex := relLogIndex(rf.snapshotIndex, logIn(index))
 	if snapshot == nil || len(snapshot) < 1 || relIndex < 0 {
-		Debug(dSnap, "S%d Snapshot ignore size: %d index: %d rf.sidx: %d relIndex: %d", rf.me, len(snapshot), index, rf.snapshotIndex, relIndex)
+		Debug(dSnap, "S%d illegal Snapshot size: %d index: %d rf.sidx: %d relIndex: %d", rf.me, len(snapshot), index, rf.snapshotIndex, relIndex)
 		return
 	}
 	Debug(dSnap, "S%d before Snapshot index: %d snapshotIndex: %d snapshotTerm: %d nextIndex: %v commitIndex: %d lastApplied: %d lastAppliedSnapshot: %d logLen: %d",
@@ -271,7 +273,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		return
 	}
 	if rf.currentTerm < args.Term {
-		Debug(dTerm, "S%d Term is higher, updating (%d > %d)", rf.me, args.Term, rf.currentTerm)
+		Debug(dTerm, "S%d <- S%d Term is higher, updating term(%d > %d)", rf.me, args.CandidateId, args.Term, rf.currentTerm)
 		rf.becomeFollower(args.Term, nobody)
 	}
 	if rf.currentTerm != args.Term {
@@ -389,6 +391,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		if absLogIndex(rf.snapshotIndex, rf.commitIndex) < args.LeaderCommit {
 			// commitIndex = min(leaderCommit, index of last new entry)
 			rf.commitIndex = relLogIndex(rf.snapshotIndex, min(args.LeaderCommit, args.PrevLogIndex+len(args.Entries)))
+			Debug(dLog, "S%d[T%d] <- S%d[T%d] Update commitIndex: %d, len(log)=%d", rf.me, rf.currentTerm,
+				args.LeaderId, args.Term, rf.commitIndex, len(rf.log))
 		}
 		return
 	}
@@ -447,8 +451,10 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 	rf.becomeFollower(args.Term, args.LeaderId)
 
 	if rf.installSnapshotLogUptoDate(args) {
-		Debug(dSnap, "S%d <- S%d receive snapshot T: %d LIT: %d LII: %d size: %d",
+		Debug(dLog2, "S%d <- S%d receive snapshot T: %d LIT: %d LII: %d size: %d",
 			rf.me, args.LeaderId, args.Term, args.LastIncludedTerm, args.LastIncludedIndex, len(args.Snapshot))
+		Debug(dSnap, "S%d before InstallSnapshot snapshotIndex: %d snapshotTerm: %d nextIndex: %v commitIndex: %d lastApplied: %d lastAppliedSnapshot: %d logLen: %d",
+			rf.me, rf.snapshotIndex, rf.snapshotTerm, rf.nextIndex, rf.commitIndex, rf.lastApplied, rf.lastAppliedSnapshot, len(rf.log))
 		relLogNewStartIndex := relLogIndex(rf.snapshotIndex, args.LastIncludedIndex) + 1
 		if relLogNewStartIndex >= len(rf.log) {
 			rf.log = make([]LogEntry, 0)
@@ -463,6 +469,11 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 		rf.snapshotIndex = args.LastIncludedIndex
 		rf.snapshot = args.Snapshot
 		rf.persist()
+		Debug(dSnap, "S%d after InstallSnapshot snapshotIndex: %d snapshotTerm: %d nextIndex: %v commitIndex: %d lastApplied: %d lastAppliedSnapshot: %d logLen: %d",
+			rf.me, rf.snapshotIndex, rf.snapshotTerm, rf.nextIndex, rf.commitIndex, rf.lastApplied, rf.lastAppliedSnapshot, len(rf.log))
+	} else {
+		Debug(dDrop, "S%d <- S%d drop snapshot T: %d LIT: %d LII: %d size: %d rf.snapTerm: %d, rf.snapIndex: %d",
+			rf.me, args.LeaderId, args.Term, args.LastIncludedTerm, args.LastIncludedIndex, len(args.Snapshot), rf.snapshotTerm, rf.snapshotIndex)
 	}
 }
 
@@ -502,14 +513,14 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
-	Debug(dLog, "S%d -> S%d Sending T: %d PLI: %d PLT: %d N: %d LC: %d - %v", args.LeaderId, server, args.Term,
+	Debug(dLog, "S%d -> S%d Sending AppendEntries T: %d PLI: %d PLT: %d N: %d LC: %d - %v", args.LeaderId, server, args.Term,
 		args.PrevLogIndex, args.PrevLogTerm, len(args.Entries), args.LeaderCommit, args.Entries)
 	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
 	return ok
 }
 
 func (rf *Raft) sendInstallSnapshot(server int, args *InstallSnapshotArgs, reply *InstallSnapshotReply) bool {
-	Debug(dSnap, "S%d -> S%d Sending T: %d LIT: %d LII: %d size: %d", args.LeaderId, server, args.Term,
+	Debug(dLog2, "S%d -> S%d Sending InstallSnapshot T: %d LIT: %d LII: %d size: %d", args.LeaderId, server, args.Term,
 		args.LastIncludedTerm, args.LastIncludedIndex, len(args.Snapshot))
 	ok := rf.peers[server].Call("Raft.InstallSnapshot", args, reply)
 	return ok
@@ -543,6 +554,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		Term:    rf.currentTerm,
 		Command: command,
 	})
+	Debug(dClient, "S%d apply Start: %v", rf.me, command)
 	rf.persist()
 	index = logOut(absLogIndex(rf.snapshotIndex, len(rf.log)-1))
 	term = rf.currentTerm
@@ -602,7 +614,8 @@ func (rf *Raft) broadcastLog(currentTerm int) {
 					return
 				}
 				if rf.snapshotIndex != args.LastIncludedIndex || rf.snapshotTerm != args.LastIncludedTerm {
-					Debug(dSnap, "S%d snapshotIndex changed when waiting InstallSnapshot response: before: %d, after: %d", rf.me, args.LastIncludedIndex, rf.snapshotIndex)
+					Debug(dLog2, "S%d snapshotIndex changed when waiting InstallSnapshot response: before: %d, after: %d",
+						rf.me, args.LastIncludedIndex, rf.snapshotIndex)
 					rf.mu.Unlock()
 					return
 				}
@@ -614,7 +627,8 @@ func (rf *Raft) broadcastLog(currentTerm int) {
 
 				rf.nextIndex[server] = 0
 				rf.matchIndex[server] = rf.nextIndex[server] - 1
-				Debug(dLeader, "S%d <- S%d Update after InstallSnapshot nextIdx(%d) and matchIdx(%d), rf.snapShotIdx=%d", rf.me, server, rf.nextIndex[server], rf.matchIndex[server], rf.snapshotIndex)
+				Debug(dLeader, "S%d <- S%d Reinit nextIndex and commitIndex after InstallSnapshot rf.snapShotIdx=%d",
+					rf.me, server, rf.snapshotIndex)
 				prevLogIndex = args.LastIncludedIndex
 				prevLogTerm = args.LastIncludedTerm
 				if relLogIndex(rf.snapshotIndex, prevLogIndex) != -1 {

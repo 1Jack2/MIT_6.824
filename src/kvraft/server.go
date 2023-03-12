@@ -4,6 +4,7 @@ import (
 	"6.824/labgob"
 	"6.824/labrpc"
 	"6.824/raft"
+	"bytes"
 	"log"
 	"sync"
 	"sync/atomic"
@@ -36,18 +37,22 @@ type Op struct {
 }
 
 type KVServer struct {
-	mu      sync.Mutex
-	me      int
-	rf      *raft.Raft
-	applyCh chan raft.ApplyMsg
-	dead    int32 // set by Kill()
+	mu        sync.Mutex
+	me        int
+	rf        *raft.Raft
+	applyCh   chan raft.ApplyMsg
+	dead      int32 // set by Kill()
+	persister *raft.Persister
 
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
-	state             map[string]string           // kv table
-	clerkResult       map[string]map[int64]string // Clerk RPC result
-	lastCommitLogTerm int
+	state              map[string]string           // kv table
+	clerkResult        map[string]map[int64]string // Clerk RPC result
+	lastCommitLogTerm  int
+	lastCommitLogIndex int
+	lastSnapshotTerm   int
+	lastSnapshotIndex  int
 }
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
@@ -170,18 +175,30 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.clerkResult = make(map[string]map[int64]string)
 
 	kv.applyCh = make(chan raft.ApplyMsg)
+	kv.persister = persister
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
 	// You may need initialization code here.
+	kv.readSnapshot(persister.ReadSnapshot())
+	go kv.applier()
 	go kv.ticker()
 
 	return kv
 }
 
-func (kv *KVServer) ticker() {
+func (kv *KVServer) applier() {
 	for applyMsg := range kv.applyCh {
 		if applyMsg.CommandValid == false {
-			// ignore other types of ApplyMsg
+			if !applyMsg.SnapshotValid {
+				continue
+			}
+			kv.mu.Lock()
+			if kv.isStaleSnapshot(applyMsg.SnapshotTerm, applyMsg.SnapshotIndex) {
+				kv.mu.Unlock()
+				continue
+			}
+			kv.readSnapshot(applyMsg.Snapshot)
+			kv.mu.Unlock()
 		} else {
 			op := applyMsg.Command.(Op)
 			kv.mu.Lock()
@@ -191,15 +208,16 @@ func (kv *KVServer) ticker() {
 				kv.mu.Unlock()
 				continue
 			}
-			DPrintf("KV%d before apply op: %v value: %v", kv.me, op, kv.get(op.Key))
+			//DPrintf("KV%d before apply op: %v value: %v", kv.me, op, kv.get(op.Key))
 			switch op.OpType {
 			case PUT:
 				kv.put(op.Key, op.Value)
 			case APPEND:
 				kv.append(op.Key, op.Value)
 			}
-			kv.lastCommitLogTerm = applyMsg.CommandTerm
 			kv.putClerkReq(op.ClerkId, op.ClerkSeq, kv.get(op.Key))
+			kv.lastCommitLogTerm = applyMsg.CommandTerm
+			kv.lastCommitLogIndex = applyMsg.CommandIndex
 			DPrintf("KV%d after apply op: %v value: %v", kv.me, op, kv.get(op.Key))
 			kv.mu.Unlock()
 		}
@@ -240,4 +258,79 @@ func (kv *KVServer) putClerkReq(clerkId string, seq int64, value string) {
 
 func (kv *KVServer) leaderChanged(term int) bool {
 	return kv.lastCommitLogTerm > term
+}
+
+// change state
+// return snapshot data
+func (kv *KVServer) snapshot() (index int, snapshot []byte) {
+
+	kv.lastSnapshotIndex = kv.lastCommitLogIndex
+	kv.lastSnapshotTerm = kv.lastCommitLogTerm
+
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(kv.state)
+	e.Encode(kv.clerkResult)
+	e.Encode(kv.lastCommitLogTerm)
+	e.Encode(kv.lastCommitLogIndex)
+	e.Encode(kv.lastSnapshotTerm)
+	e.Encode(kv.lastSnapshotIndex)
+	return kv.lastSnapshotIndex, w.Bytes()
+}
+
+func (kv *KVServer) readSnapshot(data []byte) {
+	if data == nil || len(data) < 1 { // bootstrap without any state?
+		return
+	}
+	// Your code here (2C).
+	// Example:
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+
+	var state map[string]string
+	var clerkResult map[string]map[int64]string
+	var lastCommitLogTerm, lastCommitLogIndex int
+	var lastSnapshotTerm, lastSnapshotIndex int
+	if d.Decode(&state) != nil ||
+		d.Decode(&clerkResult) != nil ||
+		d.Decode(&lastCommitLogTerm) != nil ||
+		d.Decode(&lastCommitLogIndex) != nil ||
+		d.Decode(&lastSnapshotTerm) != nil ||
+		d.Decode(&lastSnapshotIndex) != nil {
+		log.Fatalf("KV%d readSnapshot error\n", kv.me)
+	} else {
+		kv.state = state
+		kv.clerkResult = clerkResult
+		kv.lastCommitLogTerm = lastCommitLogTerm
+		kv.lastCommitLogIndex = lastCommitLogIndex
+		kv.lastSnapshotTerm = lastSnapshotTerm
+		kv.lastSnapshotIndex = lastSnapshotIndex
+	}
+}
+
+func (kv *KVServer) ticker() {
+	for {
+		kv.mu.Lock()
+		if kv.maxraftstate > -1 && kv.persister.RaftStateSize() > kv.maxraftstate {
+			index, snapshot := kv.snapshot()
+			kv.mu.Unlock()
+			DPrintf("KV%d snapshot: lastSnapshotIndex: %d", kv.me, index)
+			kv.rf.Snapshot(index, snapshot)
+		} else {
+			kv.mu.Unlock()
+		}
+
+		time.Sleep(TickerInterval)
+	}
+}
+
+func (kv *KVServer) isStaleSnapshot(lastSnapshotTerm int, lastSnapshotIndex int) bool {
+	if kv.lastSnapshotTerm > lastSnapshotTerm {
+		return true
+	}
+	if kv.lastSnapshotTerm < lastSnapshotTerm {
+		return false
+	}
+
+	return kv.lastSnapshotIndex >= lastSnapshotIndex
 }
